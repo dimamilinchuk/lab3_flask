@@ -1,22 +1,44 @@
 from flask import Blueprint, request, jsonify
-from app.models import Record, User, Category, db
+from app.models import Record, User, Account, Category, db
+from app.schemas import RecordSchema
+from marshmallow import ValidationError
 
 bp = Blueprint('records', __name__, url_prefix='/records')
 
 @bp.route('/', methods=['POST'])
 def create_record():
-    data = request.json
-    user = User.query.get_or_404(data['user_id'])
-    category = Category.query.get_or_404(data['category_id'])
+    data = request.get_json()
+    schema = RecordSchema()
+    try:
+        validated_data = schema.load(data)
+    except ValidationError as err:
+        return jsonify(err.messages), 400
+    
+    user = User.query.get_or_404(validated_data['user_id'])
+    category = Category.query.get_or_404(validated_data['category_id'])
+    currency_id = validated_data.get('currency_id', user.default_currency_id)
+    
+    if currency_id != user.default_currency_id:
+        return jsonify({"error": "Record currency must match user's default currency"}), 400
+    
+    account = Account.query.filter_by(user_id=user.id).first_or_404()
+    account.balance -= validated_data['amount']
+    
     record = Record(
         user_id=user.id,
         category_id=category.id,
-        amount=data['amount'],
-        currency_id=data.get('currency_id', user.default_currency_id)
+        amount=validated_data['amount'],
+        currency_id=currency_id
     )
+    
     db.session.add(record)
     db.session.commit()
-    return jsonify({"id": record.id, "amount": record.amount}), 201
+    
+    return jsonify({
+        "id": record.id,
+        "amount": record.amount,
+        "balance": account.balance
+    }), 201
 
 @bp.route('/', methods=['GET'])
 def get_records():
